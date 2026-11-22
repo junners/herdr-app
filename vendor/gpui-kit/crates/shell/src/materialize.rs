@@ -1456,10 +1456,10 @@ fn materialize_component(
             image.style().refine(&refinement);
             image.style().text.color = Some(inherited);
             if let Some(ms) = behavior.spin {
-                let turn = (loop_clock_ms() % ms) / ms;
+                // ~10 fps: each step inline rebuilds its whole view.
+                let turn = spin_turn(ms, INLINE_SPIN_STEP_MS);
                 image = image.with_transformation(gpui::Transformation::rotate(gpui::radians((turn * std::f64::consts::TAU) as f32)));
-                // ~10 fps: a small spinner looks the same, and each step redraws its whole view.
-                wake_view_after(Duration::from_millis(100), window, cx);
+                wake_view_after(until_spin_step(INLINE_SPIN_STEP_MS), window, cx);
             }
             image.into_any_element()
         }
@@ -2917,6 +2917,27 @@ fn spin_slot(
     slot.into_any_element()
 }
 
+/// A hosted step redraws only ShellRoot's thin layers, so it can turn at ~30 fps:
+/// at 10 fps a 900 ms spinner jumps 40 degrees a step and looks like it stutters.
+const HOSTED_SPIN_STEP_MS: f64 = 1000.0 / 30.0;
+/// An inline step rebuilds its whole view.
+const INLINE_SPIN_STEP_MS: f64 = 100.0;
+
+/// How far round a spinner turning once every `ms` is, at the last `step` of
+/// the shared clock: every spinner steps at the same moments and by the same
+/// angle, however late its frame is drawn, so a turn is even rather than jittery.
+fn spin_turn(ms: f64, step: f64) -> f64 {
+    let at = (loop_clock_ms() / step).floor() * step;
+    (at % ms) / ms
+}
+
+/// Time until the shared clock's next `step`, so spinners in different views
+/// wake for the same window frame instead of each on its own timer.
+fn until_spin_step(step: f64) -> Duration {
+    let left = step - loop_clock_ms() % step;
+    Duration::from_secs_f64(left.max(1.0) / 1000.0)
+}
+
 /// `view`'s spinners, turned to now; while there are any, the view this is
 /// drawn in (a ShellRoot) is woken for the next step.
 pub(crate) fn spin_layer(view: gpui::EntityId) -> AnyElement {
@@ -2929,7 +2950,7 @@ pub(crate) fn spin_layer(view: gpui::EntityId) -> AnyElement {
             }
             let scale = window.scale_factor();
             for s in spins {
-                let turn = (loop_clock_ms() % s.ms) / s.ms;
+                let turn = spin_turn(s.ms, HOSTED_SPIN_STEP_MS);
                 let center = s.bounds.center();
                 let matrix = gpui::TransformationMatrix::unit()
                     .translate(center.scale(scale))
@@ -2939,7 +2960,7 @@ pub(crate) fn spin_layer(view: gpui::EntityId) -> AnyElement {
                     let _ = window.paint_svg(s.bounds, s.path, None, matrix, s.color, cx);
                 });
             }
-            wake_view_after(Duration::from_millis(100), window, cx);
+            wake_view_after(until_spin_step(HOSTED_SPIN_STEP_MS), window, cx);
         },
     )
     .absolute()
