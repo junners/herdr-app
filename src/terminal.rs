@@ -632,7 +632,7 @@ impl TerminalView {
         open
     }
 
-    /// Output is drawn on a shared clock (~30 a second), so panes printing
+    /// Batch output for half a 60 Hz frame, so panes printing
     /// out of step share window frames; right after typing, at once.
     fn redraw_soon(&self, cx: &mut Context<Self>) {
         if self.typed_at.get().is_some_and(|t| t.elapsed() < Duration::from_millis(200)) {
@@ -642,14 +642,15 @@ impl TerminalView {
         let me = cx.entity().downgrade();
         let start = OUTPUT_CLOCK.with(|c| {
             let mut c = c.borrow_mut();
+            let start = c.is_empty();
             if !c.iter().any(|w| w.entity_id() == me.entity_id()) {
                 c.push(me);
             }
-            c.len() == 1
+            start
         });
         if start {
             cx.spawn(async |_, cx| {
-                cx.background_executor().timer(Duration::from_millis(33)).await;
+                cx.background_executor().timer(Duration::from_millis(8)).await;
                 cx.update(flush_output_clock);
             })
             .detach();
@@ -5024,7 +5025,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn flush_output_clock_notifies_pending_terminals_before_the_33ms_timer(cx: &mut gpui::TestAppContext) {
+    fn flush_output_clock_notifies_pending_terminals_before_the_batch_timer(cx: &mut gpui::TestAppContext) {
         use gpui::*;
         use std::cell::Cell;
         use std::rc::Rc;
@@ -5047,14 +5048,14 @@ mod tests {
             terminal.mark_shown();
             assert!(terminal.ingest([crate::hc::Stream::Data(b"hello output\r\n".to_vec())], cx));
         });
-        assert_eq!(notifies.get(), 0, "output clock batches notifications until 33ms elapses");
+        assert_eq!(notifies.get(), 0, "output clock batches notifications until the timer fires");
 
         cx.update(super::flush_output_clock);
         cx.run_until_parked();
-        assert_eq!(notifies.get(), 1, "flushing output clock must notify immediately before 33ms");
+        assert_eq!(notifies.get(), 1, "flushing output clock must notify immediately before the timer fires");
 
-        cx.executor().advance_clock(Duration::from_millis(33));
+        cx.executor().advance_clock(Duration::from_millis(8));
         cx.run_until_parked();
-        assert_eq!(notifies.get(), 1, "subsequent 33ms tick must not emit a duplicate notification");
+        assert_eq!(notifies.get(), 1, "subsequent timer tick must not emit a duplicate notification");
     }
 }
