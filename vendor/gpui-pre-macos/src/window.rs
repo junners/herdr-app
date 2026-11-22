@@ -3363,15 +3363,15 @@ extern "C" fn step(view: *mut c_void) {
         });
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
-        // HERDR: a few vsyncs without a wake: nothing to draw. Every wake (a
-        // notify, input, a timer) restarts it through the frame waker, so
-        // waiting longer only wakes for nothing: a 10 fps spinner kept it
-        // running at 120 Hz when this waited half a second.
+        // Keep the display link warm across short gaps in interactive output
+        // and pointer motion. Sleeping after three quiet vsyncs can stall
+        // the next selection or terminal repaint on macOS. Truly idle and
+        // occluded windows can still stop their display link.
         if std::mem::take(&mut lock.woken) {
             lock.idle_frames = 0;
         } else {
             lock.idle_frames += 1;
-            if lock.idle_frames >= 3 && lock.frame_source.as_ref().is_some_and(|f| f.is_running()) {
+            if lock.idle_frames >= 30 && lock.frame_source.as_ref().is_some_and(|f| f.is_running()) {
                 lock.stop_display_link();
             }
         }
