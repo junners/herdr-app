@@ -189,7 +189,15 @@ fn load_text(path: &std::path::Path, defaults: &str, originals: &[&str]) -> Resu
 }
 
 pub fn parse(text: &str) -> Result<Vec<KeyBinding>, String> {
-    let sections: Sections = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let mut sections: Sections = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // Only users who already opted into Ctrl+B chords get cancellation chords.
+    for keys in sections.values_mut() {
+        if keys.keys().any(|key| key.starts_with("ctrl-b ")) {
+            for cancel in ["ctrl-b escape", "ctrl-b ctrl-b"] {
+                keys.entry(cancel.to_owned()).or_insert_with(|| Binding::String("app.prefix_cancel".into()));
+            }
+        }
+    }
     let mut out = Vec::new();
     let mut problems = Vec::new();
     for (section, keys) in &sections {

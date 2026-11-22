@@ -528,6 +528,20 @@ impl AppWindow {
             runtime.set_source_revision_provider(events.revision_provider());
         }
         mods::note_fonts(cx);
+        // GPUI calls this observer after ordinary keys too. Only invalidate
+        // the workspace chrome when the visible indicator actually changes.
+        let mut prefix_visible = false;
+        cx.observe_pending_input(window, move |_, window, cx| {
+            let pending = tui_prefix_pending(window);
+            if pending {
+                let owner = cx.entity();
+                window.set_pending_input_timeout_paused(&owner, true, cx);
+            }
+            if pending != prefix_visible {
+                prefix_visible = pending;
+                cx.notify();
+            }
+        }).detach();
         let seen = std::fs::read_to_string(file("seen.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let mut w = AppWindow {
             core,
@@ -1596,6 +1610,14 @@ impl AppWindow {
                     this.refresh_snapshot_mods(cx);
                 }
                 TerminalEvent::SelectionChanged => this.publish_selection(&addr, window, cx),
+                TerminalEvent::SelectionCopied => {
+                    let id = "terminal-selection-copied";
+                    this.remove_overlay(id, window, cx);
+                    this.open_overlay(id.into(), json!({
+                        "kind": "toast",
+                        "notification": {"title": "Copied to clipboard", "timeout": 1200}
+                    }), window, cx);
+                }
                 TerminalEvent::Ended => this.terminal_ended(&block, window, cx),
                 TerminalEvent::ContextMenu(at) => {
                     this.open_menu("pane", json!({ "pane": block.trim_end_matches(SWAP), "terminal": addr }), Some(*at), window, cx)
@@ -3746,6 +3768,8 @@ impl AppWindow {
                 }
                 crate::update::update_core();
             }
+            // Completing this no-op chord consumes Escape or the second prefix key.
+            "app.prefix_cancel" => {},
             "app.help" => {
                 if self.overlays.iter().any(|o| o.id == "help") {
                     self.close_overlay("help", window, cx);
@@ -5554,6 +5578,12 @@ fn shadow(el: Div, s: Option<&str>) -> Div {
         Some("lg") => el.shadow_lg(),
         _ => el,
     }
+}
+
+fn tui_prefix_pending(window: &Window) -> bool {
+    window.pending_input().is_some_and(|input| {
+        input.keystrokes().first().is_some_and(|key| key.unparse() == "ctrl-b")
+    })
 }
 
 impl Render for AppWindow {
@@ -7516,6 +7546,40 @@ export default class Probe extends View {
                 assert_eq!(order(this), ["t1", "t2", "t3"]);
             }
         });
+    }
+
+    #[test]
+    fn tui_prefix_indicator_tracks_the_pending_chord() {
+        in_own_process("tui_prefix_hint");
+    }
+
+    #[gpui::test]
+    fn tui_prefix_hint(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("tui_prefix_hint") { return; }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "context", "type": "block", "content": { "tab": "active" }
+        }));
+        cx.update(|window, app| {
+            // An exact Ctrl+B binding forces GPUI to start its ordinary timeout.
+            app.bind_keys(crate::keys::parse(r#"{"global":{
+                "ctrl-b":"app.prefix_cancel", "ctrl-b z":"pane.zoom"
+            }}"#).unwrap());
+            window.draw(app).clear(app);
+            assert!(!super::tui_prefix_pending(window));
+        });
+        for key in ["escape", "ctrl-b", "z"] {
+            cx.simulate_keystrokes("ctrl-b");
+            cx.executor().advance_clock(std::time::Duration::from_secs(3));
+            cx.run_until_parked();
+            view.update_in(cx, |this, window, _| {
+                assert_eq!(this.window_json(window)["prefix_pending"], true);
+            });
+            cx.simulate_keystrokes(key);
+            view.update_in(cx, |this, window, _| {
+                assert_eq!(this.window_json(window)["prefix_pending"], false, "{key}");
+            });
+        }
     }
 
     #[test]

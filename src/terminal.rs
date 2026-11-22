@@ -72,6 +72,8 @@ pub enum TerminalEvent {
     Link(links::Click),
     TitleChanged,
     SelectionChanged,
+    /// A terminal selection was written to the system clipboard.
+    SelectionCopied,
     /// History scroll position changed enough for mods that watch `panes().scroll`.
     ScrollChanged,
     /// The program ended.
@@ -838,6 +840,7 @@ impl TerminalView {
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
         #[cfg(target_os = "linux")]
         cx.write_to_primary(ClipboardItem::new_string(text));
+        cx.emit(TerminalEvent::SelectionCopied);
         true
     }
 
@@ -899,6 +902,11 @@ impl TerminalView {
     }
 
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        // Ordinary typing should paint the echoed text, not an unchanged
+        // grid first. Keep the event if a published selection went stale.
+        if self.published_selection.is_none() && self.selection().is_none() {
+            return;
+        }
         self.grid.borrow_mut().vt.clear_selection();
         self.selection_changed(cx);
         cx.notify();
@@ -4066,6 +4074,15 @@ mod tests {
             Root(cx.new(|cx| super::TerminalView::attach(crate::hc::offline(), "t1".into(), (40, 5), cx)))
         });
         cx.run_until_parked();
+        let copies = std::rc::Rc::new(std::cell::Cell::new(0));
+        root.update(cx, |root, cx| {
+            let copies = copies.clone();
+            cx.subscribe(&root.0, move |_, _, event: &super::TerminalEvent, _| {
+                if matches!(event, super::TerminalEvent::SelectionCopied) {
+                    copies.set(copies.get() + 1);
+                }
+            }).detach();
+        });
 
         let drag = |root: &Entity<Root>, cx: &mut VisualTestContext| {
             root.update(cx, |root, cx| {
@@ -4094,6 +4111,7 @@ mod tests {
             app.write_to_primary(ClipboardItem::new_string("primary unchanged".into()));
         });
         drag(&root, cx);
+        assert_eq!(copies.get(), 0, "no acknowledgement when auto-copy is off");
         #[cfg(target_os = "linux")]
         let selected = root.read_with(cx, |root, cx| root.0.read_with(cx, |terminal, _| terminal.grid.borrow().vt.selection_text().unwrap()));
         cx.update(|_, app| {
@@ -4120,6 +4138,7 @@ mod tests {
         settings.copy_on_select = true;
         crate::settings::set(settings);
         drag(&root, cx);
+        assert_eq!(copies.get(), 2, "one acknowledgement for manual copy and one for auto-copy");
         let selected = root.read_with(cx, |root, cx| root.0.read_with(cx, |terminal, _| terminal.grid.borrow().vt.selection_text().unwrap()));
         assert!(!selected.is_empty());
         cx.update(|_, app| {
