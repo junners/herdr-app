@@ -297,6 +297,8 @@ export function window(): {
   maximized: boolean;
   fullscreen: boolean;
   active: boolean;
+  /** The TUI-style Ctrl+B chord is waiting for its next key. */
+  prefix_pending: boolean;
 };
 
 /** Sets the OS window's title, which window switchers, taskbars and time trackers read. The last
